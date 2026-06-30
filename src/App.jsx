@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { Preferences } from "@capacitor/preferences";
 
-const STORAGE_KEY = "expense_tracker_data_v1";
+const STORAGE_KEY = "expense_tracker_data_v2"; // V2 to avoid mixing up structure with previous web version
+const CURRENCY_KEY = "expense_tracker_currency";
+
+const CURRENCIES = [
+  { code: "NGN", label: "₦ Nigerian Naira (NGN)", locale: "en-NG" },
+  { code: "USD", label: "$ US Dollar (USD)", locale: "en-US" },
+  { code: "EUR", label: "€ Euro (EUR)", locale: "de-DE" },
+  { code: "GBP", label: "£ British Pound (GBP)", locale: "en-GB" },
+  { code: "CAD", label: "$ Canadian Dollar (CAD)", locale: "en-CA" },
+];
 
 const CATEGORIES = [
   { name: "Food", icon: "🍔", color: "#FF6B6B" },
@@ -15,45 +25,84 @@ const CATEGORIES = [
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const seedExpenses = [
-  { id: 1, description: "Groceries", amount: 12500, category: "Food", date: "2026-03-08" },
-  { id: 2, description: "Uber to office", amount: 3200, category: "Transport", date: "2026-03-07" },
-  { id: 3, description: "DSTV subscription", amount: 8500, category: "Entertainment", date: "2026-03-05" },
-  { id: 4, description: "EKEDC bill", amount: 15000, category: "Utilities", date: "2026-03-03" },
-  { id: 5, description: "Lunch at Chicken Republic", amount: 4500, category: "Food", date: "2026-03-01" },
-];
-
-const formatCurrency = (amount) =>
-  new Intl.NumberFormat("en-NG", {
+const formatCurrency = (amount, currencyCode) => {
+  const currencyObj = CURRENCIES.find((c) => c.code === currencyCode) || CURRENCIES[0];
+  return new Intl.NumberFormat(currencyObj.locale, {
     style: "currency",
-    currency: "NGN",
+    currency: currencyObj.code,
     maximumFractionDigits: 0,
   }).format(amount);
+};
 
 const today = () => new Date().toISOString().split("T")[0];
 
-const getInitialExpenses = () => {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return seedExpenses;
-    const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? parsed : seedExpenses;
-  } catch {
-    return seedExpenses;
-  }
-};
-
 export default function App() {
-  const [expenses, setExpenses] = useState(getInitialExpenses);
+  const [expenses, setExpenses] = useState([]);
+  const [currency, setCurrency] = useState("NGN");
+  const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ description: "", amount: "", category: "Food", date: today() });
   const [showForm, setShowForm] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [filterCat, setFilterCat] = useState("All");
   const [editId, setEditId] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
 
+  // Load initial data on mount
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses));
-  }, [expenses]);
+    async function loadInitialData() {
+      try {
+        const { value: savedExpenses } = await Preferences.get({ key: STORAGE_KEY });
+        const { value: savedCurrency } = await Preferences.get({ key: CURRENCY_KEY });
+
+        if (savedExpenses) {
+          const parsed = JSON.parse(savedExpenses);
+          if (Array.isArray(parsed)) {
+            setExpenses(parsed);
+          } else {
+            setExpenses([]);
+          }
+        } else {
+          setExpenses([]);
+        }
+
+        if (savedCurrency) {
+          setCurrency(savedCurrency);
+        }
+      } catch (err) {
+        console.error("Error loading data from preferences:", err);
+        setExpenses([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadInitialData();
+  }, []);
+
+  // Save expenses when updated
+  useEffect(() => {
+    if (loading) return;
+    async function saveExpenses() {
+      try {
+        await Preferences.set({ key: STORAGE_KEY, value: JSON.stringify(expenses) });
+      } catch (err) {
+        console.error("Error saving expenses:", err);
+      }
+    }
+    saveExpenses();
+  }, [expenses, loading]);
+
+  // Save currency when updated
+  useEffect(() => {
+    if (loading) return;
+    async function saveCurrency() {
+      try {
+        await Preferences.set({ key: CURRENCY_KEY, value: currency });
+      } catch (err) {
+        console.error("Error saving currency:", err);
+      }
+    }
+    saveCurrency();
+  }, [currency, loading]);
 
   const filtered = useMemo(
     () => (filterCat === "All" ? expenses : expenses.filter((e) => e.category === filterCat)),
@@ -134,6 +183,21 @@ export default function App() {
 
   const getCat = (name) => CATEGORIES.find((category) => category.name === name) || CATEGORIES[7];
 
+  const currentCurrencyObj = useMemo(() => {
+    return CURRENCIES.find((c) => c.code === currency) || CURRENCIES[0];
+  }, [currency]);
+
+  if (loading) {
+    return (
+      <div className="app-shell loading-shell">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p className="headline loading-text">Loading App...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <div className="tracker container">
@@ -146,30 +210,39 @@ export default function App() {
             </h1>
           </div>
 
-          <button
-            className="btn btn-gold"
-            onClick={() => {
-              setShowForm(true);
-              setEditId(null);
-              setForm({ description: "", amount: "", category: "Food", date: today() });
-            }}
-          >
-            <span className="plus">+</span> Add Expense
-          </button>
+          <div className="header-actions">
+            <button
+              className="settings-trigger"
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+            >
+              ⚙️ Settings
+            </button>
+            <button
+              className="btn btn-gold"
+              onClick={() => {
+                setShowForm(true);
+                setEditId(null);
+                setForm({ description: "", amount: "", category: "Food", date: today() });
+              }}
+            >
+              <span className="plus">+</span> Add Expense
+            </button>
+          </div>
         </header>
 
         <section className="stats-grid">
           {[
-            { label: "Total Spent", value: formatCurrency(totalSpent), sub: `${expenses.length} transactions` },
+            { label: "Total Spent", value: formatCurrency(totalSpent, currency), sub: `${expenses.length} transactions` },
             {
               label: "Top Category",
               value: topCategory ? topCategory[0] : "—",
-              sub: topCategory ? formatCurrency(topCategory[1]) : "No data",
+              sub: topCategory ? formatCurrency(topCategory[1], currency) : "No data",
             },
             {
               label: "This Month",
-              value: formatCurrency(thisMonthTotal),
-              sub: new Intl.DateTimeFormat("en-NG", { month: "long", year: "numeric" }).format(new Date()),
+              value: formatCurrency(thisMonthTotal, currency),
+              sub: new Intl.DateTimeFormat(currentCurrencyObj.locale, { month: "long", year: "numeric" }).format(new Date()),
             },
           ].map((item) => (
             <article key={item.label} className="stat-card">
@@ -195,7 +268,7 @@ export default function App() {
                     <div className="bar-track">
                       <div className="bar-fill" style={{ width: `${pct}%`, background: cat.color }} />
                     </div>
-                    <span className="breakdown-amount">{formatCurrency(amount)}</span>
+                    <span className="breakdown-amount">{formatCurrency(amount, currency)}</span>
                     <span className="breakdown-percent">{pct}%</span>
                   </div>
                 );
@@ -246,7 +319,7 @@ export default function App() {
                     </p>
                   </div>
 
-                  <div className="headline expense-amount">{formatCurrency(expense.amount)}</div>
+                  <div className="headline expense-amount">{formatCurrency(expense.amount, currency)}</div>
 
                   <div className="expense-actions">
                     <button className="icon-btn" onClick={() => startEdit(expense)} title="Edit">
@@ -266,7 +339,7 @@ export default function App() {
           <footer className="total-footer">
             <span className="footer-label">{filterCat !== "All" ? `${filterCat} total` : "Grand total"}:</span>
             <span className="headline footer-value">
-              {formatCurrency(filtered.reduce((sum, expense) => sum + expense.amount, 0))}
+              {formatCurrency(filtered.reduce((sum, expense) => sum + expense.amount, 0), currency)}
             </span>
           </footer>
         )}
@@ -289,7 +362,7 @@ export default function App() {
               </div>
 
               <div>
-                <label className="field-label">Amount (₦)</label>
+                <label className="field-label">Amount ({currentCurrencyObj.code})</label>
                 <input
                   type="number"
                   placeholder="0"
@@ -327,6 +400,44 @@ export default function App() {
                 </button>
                 <button className="btn btn-gold" onClick={handleSubmit}>
                   {editId !== null ? "Save Changes" : "Add Expense"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="overlay" onClick={() => setShowSettings(false)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <h2 className="headline modal-title">Settings</h2>
+
+            <div className="form-stack">
+              <div>
+                <label className="field-label">Preferred Currency</label>
+                <select
+                  value={currency}
+                  onChange={(event) => setCurrency(event.target.value)}
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="settings-info-card">
+                <p className="settings-info-title">🔒 Local & Secure</p>
+                <p className="settings-info-text">
+                  Your expenses and preferences are stored strictly on your local device. 
+                  No data is uploaded or transmitted to any server. 100% offline.
+                </p>
+              </div>
+
+              <div className="form-actions">
+                <button className="btn btn-gold" onClick={() => setShowSettings(false)}>
+                  Done
                 </button>
               </div>
             </div>
